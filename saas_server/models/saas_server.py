@@ -17,6 +17,7 @@ class SaasServerClient(models.Model):
 
     name = fields.Char('Database name', readonly=True, required=True)
     client_id = fields.Char('Database UUID', readonly=True, select=True)
+    expiration_datetime = fields.Datetime(readonly=True)
     state = fields.Selection([('template', 'Template'),
                               ('draft','New'),
                               ('open','In Progress'),
@@ -200,8 +201,9 @@ class SaasServerClient(models.Model):
             return {'state': 'deleted'}
         users = client_env['res.users'].search([('share', '=', False)])
         param_obj = client_env['ir.config_parameter']
-        max_users = param_obj.get_param('saas_client.max_users', '_')
-        suspended = param_obj.get_param('saas_client.suspended', '0')
+        max_users = param_obj.get_param('saas_client.max_users', '0').strip()
+        suspended = param_obj.get_param('saas_client.suspended', '0').strip()
+        total_storage_limit = param_obj.get_param('saas_client.total_storage_limit', '0').strip()
         users_len = len(users)
         data_dir = openerp.tools.config['data_dir']
 
@@ -218,6 +220,7 @@ class SaasServerClient(models.Model):
             'max_users': max_users,
             'file_storage': file_storage,
             'db_storage': db_storage,
+            'total_storage_limit': total_storage_limit,
         }
         if suspended == '0' and self.state == 'pending':
             data.update({'state': 'open'})
@@ -268,10 +271,14 @@ class SaasServerClient(models.Model):
         # 5. update parameters
         params = post.get('params', [])
         for obj in params:
+            if obj['key'] == 'saas_client.expiration_datetime':
+                self.expiration_datetime = obj['value']
+            if obj['key'] == 'saas_client.trial' and obj['value'] == 'False':
+                self.trial = False
             groups = []
             if obj.get('hidden'):
                 groups = ['saas_client.group_saas_support']
-            client_env['ir.config_parameter'].set_param(obj['key'], obj['value'], groups=groups)
+            client_env['ir.config_parameter'].set_param(obj['key'], obj['value'] or ' ', groups=groups)
 
         # 6. Access rights
         access_owner_add = post.get('access_owner_add', [])
@@ -306,7 +313,8 @@ class SaasServerClient(models.Model):
     @api.model
     def delete_expired_databases(self):
         now = time.strftime(DEFAULT_SERVER_DATETIME_FORMAT)
-        res = self.search([('state','not in', ['deleted']), ('expiration_datetime', '<=', now)])
+
+        res = self.search([('state', 'not in', ['deleted', 'template']), ('expiration_datetime', '<=', now), ('trial', '=', True)])
         _logger.info('delete_expired_databases %s', res)
         res.delete_database()
 

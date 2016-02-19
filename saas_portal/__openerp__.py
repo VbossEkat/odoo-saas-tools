@@ -2,10 +2,12 @@
     'name': 'SaaS Portal',
     'version': '1.0.0',
     'author': 'Ivan Yelizariev',
+    'license': 'GPL-3',
     'category': 'SaaS',
     'website': 'https://it-projects.info',
     'depends': ['oauth_provider', 'website', 'auth_signup', 'saas_base', 'saas_utils', 'base_action_rule'],
     'data': [
+        'data/mail_template_data.xml',
         'data/plan_sequence.xml',
         'data/cron.xml',
         'views/wizard.xml',
@@ -17,7 +19,7 @@
         'views/res_users.xml',
         'data/res_users.xml',
         'data/base_action_rule.xml',
-        'templates.xml',
+        'views/try_trial_template.xml',
         ],
     'installable': True,
 }

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import functools
 import datetime
 import openerp
 from openerp import api, SUPERUSER_ID
@@ -17,16 +18,28 @@ import simplejson
 import logging
 _logger = logging.getLogger(__name__)
 
+def webservice(f):
+    @functools.wraps(f)
+    def wrap(*args, **kw):
+        try:
+            return f(*args, **kw)
+        except Exception, e:
+            _logger.exception(str(e))
+            return http.Response(response=str(e), status=500)
+    return wrap
+
 class SaasServer(http.Controller):
 
     @http.route('/saas_server/new_database', type='http', website=True, auth='public')
     @fragment_to_query_string
+    @webservice
     def new_database(self, **post):
         _logger.info('new_database post: %s', post)
 
         state = simplejson.loads(post.get('state'))
         owner_user = state.get('owner_user')
         new_db = state.get('d')
+        trial = state.get('t')
         expiration_db = state.get('e')
         template_db = state.get('db_template')
         disable_mail_server = state.get('disable_mail_server', False)
@@ -46,7 +59,7 @@ class SaasServer(http.Controller):
         if saas_portal_user.get("error"):
             raise Exception(saas_portal_user['error'])
 
-        client_data = {'name':new_db, 'client_id': client_id, 'expiration_datetime': expiration_db}
+        client_data = {'name': new_db, 'client_id': client_id, 'expiration_datetime': expiration_db, 'trial': trial}
         client = request.env['saas_server.client'].sudo().create(client_data)
         client.create_database(template_db, demo, lang)
         client.install_addons(addons=addons, is_template_db=is_template_db)
@@ -86,6 +99,7 @@ class SaasServer(http.Controller):
 
     @http.route('/saas_server/edit_database', type='http', auth='public', website=True)
     @fragment_to_query_string
+    @webservice
     def edit_database(self, **post):
         _logger.info('edit_database post: %s', post)
 
@@ -104,6 +118,7 @@ class SaasServer(http.Controller):
 
     @http.route('/saas_server/upgrade_database', type='http', auth='public')
     @fragment_to_query_string
+    @webservice
     def upgrade_database(self, **post):
         state = simplejson.loads(post.get('state'))
         data = state.get('data')
@@ -123,6 +138,7 @@ class SaasServer(http.Controller):
 
     @http.route('/saas_server/rename_database', type='http', website=True, auth='public')
     @fragment_to_query_string
+    @webservice
     def rename_database(self, **post):
         _logger.info('delete_database post: %s', post)
         state = simplejson.loads(post.get('state'))
@@ -143,6 +159,7 @@ class SaasServer(http.Controller):
 
     @http.route('/saas_server/delete_database', type='http', website=True, auth='public')
     @fragment_to_query_string
+    @webservice
     def delete_database(self, **post):
         _logger.info('delete_database post: %s', post)
 
@@ -239,6 +256,7 @@ class SaasServer(http.Controller):
 
 
     @http.route(['/saas_server/sync_server'], type='http', auth='public')
+    @webservice
     def stats(self, **post):
         _logger.info('sync_server post: %s', post)
 
@@ -264,6 +282,7 @@ class SaasServer(http.Controller):
                 'state': client.state,
                 'file_storage': client.file_storage,
                 'db_storage': client.db_storage,
+                'total_storage_limit': client.total_storage_limit,
             })
         return simplejson.dumps(res)
     

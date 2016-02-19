@@ -5,7 +5,7 @@ from openerp import SUPERUSER_ID, exceptions
 from openerp.tools.translate import _
 from openerp.addons.web import http
 from openerp.addons.web.http import request
-from openerp.addons.saas_base.exceptions import MaximumDBException
+from openerp.addons.saas_base.exceptions import MaximumDBException, MaximumTrialDBException
 import werkzeug
 import simplejson
 
@@ -31,7 +31,15 @@ class SaasPortal(http.Controller):
             user = request.env['res.users'].browse(user_id)
             partner_id = user.partner_id.id
         plan = self.get_plan(int(post.get('plan_id', 0) or 0))
-        res = plan.create_new_database(dbname, user_id=user_id, partner_id=partner_id)
+        try:
+            res = plan.create_new_database(dbname=dbname, user_id=user_id, partner_id=partner_id)
+        except MaximumDBException:
+            url = request.env['ir.config_parameter'].sudo().get_param('saas_portal.page_for_maximumdb', '/')
+            return werkzeug.utils.redirect(url)
+        except MaximumTrialDBException:
+            url = request.env['ir.config_parameter'].sudo().get_param('saas_portal.page_for_maximumtrialdb', '/')
+            return werkzeug.utils.redirect(url)
+
         return werkzeug.utils.redirect(res.get('url'))
 
     def get_config_parameter(self, param):
@@ -76,22 +84,22 @@ class SaasPortalSale(http.Controller):
         uid = request.session.uid
         plan_id = int(kw.get('plan_id'))
         if not uid:
-            return http.local_redirect('/web/login?redirect=/trial'+'?plan_id='+str(plan_id))
+            url = '/web/login?redirect=/trial'
+            query = {'plan_id': str(plan_id)}
+            return http.local_redirect(path=url, query=query)
 
         partner = request.env['res.users'].browse(uid).partner_id
         trial_plan = request.env['saas_portal.plan'].sudo().browse(plan_id)
         support_team = request.env.ref('saas_portal.main_support_team')
-        db_creation_allowed = True
+
         try:
-            res = trial_plan.create_new_database(partner_id=partner.id, user_id=uid, notify_user=True, trial=True, support_team_id=support_team.id)
-            client = request.env['saas_portal.client'].sudo().browse(res.get('id'))
-            client.server_id.action_sync_server()
-        except MaximumDBException:
-            db_creation_allowed = False
+            trial_plan.create_new_database(partner_id=partner.id, user_id=uid, notify_user=True, trial=True, support_team_id=support_team.id)
+        except MaximumTrialDBException:
+            url = request.env['ir.config_parameter'].sudo().get_param('saas_portal.page_for_maximumtrialdb', '/')
+            return werkzeug.utils.redirect(url)
 
         values = {
             'plan': trial_plan,
-            'db_creation_allowed': db_creation_allowed,
         }
 
         return request.render('saas_portal.try_trial', values)
