@@ -1,8 +1,10 @@
+# -*- coding: utf-8 -*-
 {
     'name': 'SaaS System Administration Route 53',
     'summary': "Aws Route 53 integration for SAAS Tools",
     'version': '1.0.0',
     'author': 'Salton Massally <smassally@idtlabs.sl> (iDT Labs)',
+    'license': 'GPL-3',
     'category': 'SaaS',
     'website': 'idtlabs.sl',
     'external_dependencies': {
@@ -10,10 +12,12 @@
             'boto',
         ],
     },
-    'depends': ['saas_sysadmin'],
+    'depends': [
+        'saas_sysadmin',
+        'saas_sysadmin_aws',
+        'saas_sysadmin_aws_route53',
+    ],
     'data': [
-        'views/saas_sysadmin_route53.xml',
-        'views/res_config.xml',
-        ],
+    ],
     'installable': True,
 }

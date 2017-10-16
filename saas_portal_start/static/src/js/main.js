@@ -1,5 +1,19 @@
 $(document).ready(function () {
+    // check that we are on /page/start page
+    if (!$('.odoo_call_action_bg').length)
+        return;
+
+    var height = $(window).innerHeight();
+    var headerHeight = $('header').innerHeight();
+    if ($('#oe_main_menu_navbar').length)
+        headerHeight += $('#oe_main_menu_navbar').innerHeight();
+    $('.odoo_secondary_A').css('height', height);
+    window.scrollTo(0, headerHeight);
+
+
     /* ======== START TRIAL WIDGET ======== */
+    var plan_id = $("input[name='plan_id']").attr('value');
+    var base_saas_domain = $("input[name='base_saas_domain']").attr('value');
 
     var db_sel = 'input.odoo_db_name';
     var getUrlVars= function() {
@@ -11,7 +25,7 @@ $(document).ready(function () {
             vars[hash[0]] = hash[1];
         }
         return vars;
-    }
+    };
     var url_params = getUrlVars();
     var check_database = function($input) {
         var error = false;
@@ -55,8 +69,8 @@ $(document).ready(function () {
             var request = $.ajax(payload).done(
                 function(response, textStatus, jqXhr) {
                     if (!response.result.error) {
-                        var app = $input.attr('data-app') || url_params['app'] || '';
-                        var cta_from = $input.attr('data-cta_from') || url_params['cta_from'] || false;
+                        var app = $input.attr('data-app') || url_params.app || '';
+                        var cta_from = $input.attr('data-cta_from') || url_params.cta_from || false;
 
                         // Google analytics for goal
                         if (cta_from) {
@@ -70,19 +84,19 @@ $(document).ready(function () {
                         window.dispatchEvent(ce);
 
                         var lang = 'en_US';
-                        var hosting = $input.attr('data-hosting') || url_params['hosting'] || '';
+                        var hosting = $input.attr('data-hosting') || url_params.hosting || '';
                         var offset = -(new Date().getTimezoneOffset());
                         // _.str.sprintf()'s zero front padding is buggy with signed decimals, so doing it manually
                         var browser_offset = (offset < 0) ? "-" : "+";
                         browser_offset += _.str.sprintf("%02d", Math.abs(offset / 60));
                         browser_offset += _.str.sprintf("%02d", Math.abs(offset % 60));
 
-                        var new_url = _.str.sprintf('/saas_portal/add_new_client?lang=%s&dbname=%s&tz=%s&hosting=%s&app=%s',
-                                                    lang, db_name, browser_offset, hosting, app);
+                        var new_url = _.str.sprintf('/saas_portal/add_new_client?lang=%s&dbname=%s&tz=%s&hosting=%s&app=%s&plan_id=%s',
+                                                    lang, db_name, browser_offset, hosting, app, plan_id);
                         window.location = new_url;
                     }
                     else {
-                        var db_url = 'https://'+db_name+'.odoo.com/web';
+                        var db_url = 'https://'+db_name+'.'+base_saas_domain+'/web';
                         $input.attr('data-content', 'This name is already taken, sorry.<br/>If you are the owner, please <a href="'+db_url+'">sign in</a>.');
                         $input.popover('show');
                     }
@@ -94,17 +108,17 @@ $(document).ready(function () {
         }
     };
 
-	$('button#create_instance').on('click', function(event) {
-	    event.preventDefault();
-	    var $self = $(this);
-	    var $db_input = $self.parent().parent().find(db_sel);
-	    check_database($db_input)
-	});
+    $('button#create_instance').on('click', function(event) {
+        event.preventDefault();
+        var $self = $(this);
+        var $db_input = $self.parent().parent().find(db_sel);
+        check_database($db_input);
+    });
 
-	$(db_sel).popover({html: true});
-	$(db_sel).on('keyup', function() {
+    $(db_sel).popover({html: true});
+    $(db_sel).on('keyup', function() {
         var $input = $(this);
         $input.popover('hide');
     });
 
-})
+});

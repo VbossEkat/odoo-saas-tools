@@ -1,35 +1,33 @@
 # -*- coding: utf-8 -*-
+import re
+
 import openerp
 from openerp import SUPERUSER_ID
 from openerp.addons.web import http
 from openerp.addons.web.http import request
 from openerp.addons import auth_signup
-import re
 
 
 class AuthSignupHome(auth_signup.controllers.main.AuthSignupHome):
 
     @http.route()
     def web_auth_signup(self, *args, **kw):
-        if kw.get('dbname', False):
+        if not kw.get('redirect', False) and kw.get('dbname', False):
             redirect = '/saas_portal/add_new_client'
-            kw['redirect'] = '%s?dbname=%s' % (redirect, kw['dbname'])
+            kw['redirect'] = '%s?dbname=%s&plan_id=%s' % (
+                redirect, kw['dbname'], kw['plan_id']
+            )
         return super(AuthSignupHome, self).web_auth_signup(*args, **kw)
 
     def get_auth_signup_qcontext(self):
         qcontext = super(AuthSignupHome, self).get_auth_signup_qcontext()
-        context = request.context
         if qcontext.get('token', False):
             qcontext['reset'] = True
         if not qcontext.get('plans', False):
-            sp = request.registry.get('saas_portal.plan')
-            plan_ids = sp.search(request.cr, SUPERUSER_ID, [], context=context)
-            qcontext['plans'] = sp.browse(request.cr, SUPERUSER_ID, plan_ids, context=context)
+            qcontext['plans'] = request.env['saas_portal.plan'].sudo().search([])
+
         if not qcontext.get('countries', False):
-            orm_country = request.registry.get('res.country')
-            country_ids = orm_country.search(request.cr, SUPERUSER_ID, [], context=context)
-            countries = orm_country.browse(request.cr, SUPERUSER_ID, country_ids, context=context)
-            qcontext['countries'] = countries
+            qcontext['countries'] = request.env['res.country'].search([])
         if not qcontext.get('base_saas_domain', False):
             qcontext['base_saas_domain'] = self.get_saas_domain()
         return qcontext

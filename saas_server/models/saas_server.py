@@ -1,6 +1,9 @@
-import os
+# -*- coding: utf-8 -*-
+from openerp.addons.saas_base.tools import get_size
 import time
 import openerp
+from datetime import datetime
+from openerp.service import db
 from openerp import api, models, fields, SUPERUSER_ID, exceptions
 from openerp.tools import DEFAULT_SERVER_DATETIME_FORMAT
 import psycopg2
@@ -11,43 +14,43 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
-def get_size(start_path='.'):
-    total_size = 0
-    for dirpath, dirnames, filenames in os.walk(start_path):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            total_size += os.path.getsize(fp)
-    return total_size
+def random_password(len=32):
+    return ''.join(random.SystemRandom().choice(string.ascii_uppercase + string.digits) for _ in range(len))
 
 
 class SaasServerClient(models.Model):
     _name = 'saas_server.client'
     _inherit = ['mail.thread', 'saas_base.client']
 
-    name = fields.Char('Database name', readonly=True)
+    name = fields.Char('Database name', readonly=True, required=True)
     client_id = fields.Char('Database UUID', readonly=True, select=True)
+    expiration_datetime = fields.Datetime(readonly=True)
     state = fields.Selection([('template', 'Template'),
-                              ('draft','New'),
-                              ('open','In Progress'),
+                              ('draft', 'New'),
+                              ('open', 'In Progress'),
                               ('cancelled', 'Cancelled'),
-                              ('pending','Pending'),
-                              ('deleted','Deleted')],
+                              ('pending', 'Pending'),
+                              ('deleted', 'Deleted')],
                              'State', default='draft', track_visibility='onchange')
 
     _sql_constraints = [
         ('client_id_uniq', 'unique (client_id)', 'client_id should be unique!'),
     ]
 
-    @api.one
+    @api.multi
     def create_database(self, template_db=None, demo=False, lang='en_US'):
+        self.ensure_one()
         new_db = self.name
+        res = {}
         if template_db:
             openerp.service.db._drop_conn(self.env.cr, template_db)
             openerp.service.db.exp_duplicate_database(template_db, new_db)
         else:
-            password = ''.join(random.SystemRandom().choice(string.ascii_uppercase + string.digits) for _ in range(32))
+            password = random_password()
+            res.update({'superuser_password': password})
             openerp.service.db.exp_create_database(new_db, demo, lang, user_password=password)
         self.state = 'open'
+        return res
 
     @api.one
     def registry(self, new=False, **kwargs):
@@ -71,6 +74,7 @@ class SaasServerClient(models.Model):
         with self.registry()[0].cursor() as cr:
             env = api.Environment(cr, SUPERUSER_ID, self._context)
             self._install_addons(env, addons)
+
     @api.one
     def disable_mail_servers(self):
         '''
@@ -80,7 +84,7 @@ class SaasServerClient(models.Model):
         incoming_mail_servers = self.env['fetchmail.server'].search([])
         if len(incoming_mail_servers):
             incoming_mail_servers.write({'active': False})
-            
+
         # let's disable outgoing mailservers too
         outgoing_mail_servers = self.env['ir.mail_server'].search([])
         if len(outgoing_mail_servers):
@@ -106,7 +110,7 @@ class SaasServerClient(models.Model):
         return ['saas_client.ab_location', 'saas_client.ab_register']
 
     @api.one
-    def _prepare_database(self, client_env, owner_user=None, is_template_db=False, addons=[], access_token=None, tz=None):
+    def _prepare_database(self, client_env, owner_user=None, is_template_db=False, addons=[], access_token=None, tz=None, server_requests_scheme='http'):
         client_id = self.client_id
 
         # update saas_server.client state
@@ -126,25 +130,21 @@ class SaasServerClient(models.Model):
             value = self.env['ir.config_parameter'].get_param(key, default='')
             client_env['ir.config_parameter'].set_param(key, value)
 
-        # copy auth provider from saas_server
-        saas_oauth_provider = self.env.ref('saas_server.saas_oauth_provider')
-        oauth_provider = None
-        if is_template_db and not client_env.ref('saas_server.saas_oauth_provider', raise_if_not_found=False):
-            oauth_provider_data = {'enabled': False, 'client_id': client_id}
-            for attr in ['name', 'auth_endpoint', 'scope', 'validation_endpoint', 'data_endpoint', 'css_class', 'body', 'enabled']:
-                oauth_provider_data[attr] = getattr(saas_oauth_provider, attr)
-            oauth_provider = client_env['auth.oauth.provider'].create(oauth_provider_data)
-            client_env['ir.model.data'].create({
-                'name': 'saas_oauth_provider',
-                'module': 'saas_server',
-                'noupdate': True,
-                'model': 'auth.oauth.provider',
-                'res_id': oauth_provider.id,
-            })
-        if not oauth_provider:
-            oauth_provider = client_env.ref('saas_server.saas_oauth_provider')
+        # set web.base.url config
+        client_env['ir.config_parameter'].set_param('web.base.url', '%s://%s' % (server_requests_scheme, self.name))
 
-        if not is_template_db:
+        # saas_client must be already installed
+        oauth_provider = client_env.ref('saas_client.saas_oauth_provider')
+        if is_template_db:
+            # copy auth provider from saas_server
+            saas_oauth_provider = self.env.ref('saas_server.saas_oauth_provider')
+
+            oauth_provider_data = {'enabled': False, 'client_id': client_id}
+            for attr in ['name', 'auth_endpoint', 'scope', 'validation_endpoint', 'data_endpoint', 'css_class', 'body', 'enabled', 'local_host', 'local_port']:
+                oauth_provider_data[attr] = getattr(saas_oauth_provider, attr)
+            oauth_provider = client_env.ref('saas_client.saas_oauth_provider')
+            oauth_provider.write(oauth_provider_data)
+        else:
             oauth_provider.client_id = client_id
 
         # prepare users
@@ -167,45 +167,59 @@ class SaasServerClient(models.Model):
             res = client_env['res.users'].search(domain)
             if res:
                 user = res[0]
-            res = client_env['res.users'].search([('oauth_uid', '=', owner_user['user_id'])])
+                client_env['ir.config_parameter'].set_param('res.users.owner', user.id, groups=['saas_client.group_saas_support'])
+
+            portal_owner_uid = owner_user.pop('user_id')
+            res = client_env['res.users'].search([('oauth_uid', '=', portal_owner_uid)])
             if res:
                 # user already exists (e.g. administrator)
                 user = res[0]
             if not user:
                 user = client_env['res.users'].browse(SUPERUSER_ID)
-            user.write({
-                'login': owner_user['login'],
-                'name': owner_user['name'],
-                'email': owner_user['email'],
+
+            vals = owner_user
+            vals.update({
                 'oauth_provider_id': oauth_provider.id,
-                'oauth_uid': owner_user['user_id'],
-                'oauth_access_token': access_token
+                'oauth_uid': portal_owner_uid,
+                'oauth_access_token': access_token,
+                'country_id': owner_user.get('country_id') and self.env['res.country'].browse(owner_user['country_id']) and \
+                self.env['res.country'].browse(owner_user['country_id']).id,
             })
 
+            user.write(vals)
 
     @api.model
     def update_all(self):
         self.sudo().search([]).update()
 
+    @api.multi
+    def update_one(self):
+        self.ensure_one()
+        self.sudo().update()
+
     @api.one
     def update(self):
         try:
             registry = self.registry()[0]
+            with registry.cursor() as client_cr:
+                client_env = api.Environment(client_cr, SUPERUSER_ID, self._context)
+                data = self._get_data(client_env, self.client_id)[0]
+                self.write(data)
         except psycopg2.OperationalError:
             if self.state != 'draft':
                 self.state = 'deleted'
             return
-        with registry.cursor() as client_cr:
-            client_env = api.Environment(client_cr, SUPERUSER_ID, self._context)
-            data = self._get_data(client_env, self.client_id)[0]
-            self.write(data)
 
     @api.one
     def _get_data(self, client_env, check_client_id):
         client_id = client_env['ir.config_parameter'].get_param('database.uuid')
         if check_client_id != client_id:
             return {'state': 'deleted'}
-        users = client_env['res.users'].search([('share', '=', False)])
+        users = client_env['res.users'].search([('share', '=', False), ('id', '!=', SUPERUSER_ID)])
+        param_obj = client_env['ir.config_parameter']
+        max_users = param_obj.get_param('saas_client.max_users', '0').strip()
+        suspended = param_obj.get_param('saas_client.suspended', '0').strip()
+        total_storage_limit = param_obj.get_param('saas_client.total_storage_limit', '0').strip()
         users_len = len(users)
         data_dir = openerp.tools.config['data_dir']
 
@@ -219,9 +233,15 @@ class SaasServerClient(models.Model):
         data = {
             'client_id': client_id,
             'users_len': users_len,
+            'max_users': max_users,
             'file_storage': file_storage,
             'db_storage': db_storage,
+            'total_storage_limit': total_storage_limit,
         }
+        if suspended == '0' and self.state == 'pending':
+            data.update({'state': 'open'})
+        if suspended == '1' and self.state == 'open':
+            data.update({'state': 'pending'})
         return data
 
     @api.one
@@ -230,19 +250,19 @@ class SaasServerClient(models.Model):
             env = api.Environment(cr, SUPERUSER_ID, self._context)
             return self._upgrade_database(env, **kwargs)[0]
 
-
     @api.one
     def _upgrade_database(self, client_env, data):
         # "data" comes from saas_portal/models/wizard.py::upgrade_database
         post = data
         module = client_env['ir.module.module']
         print '_upgrade_database', data
-        
+        res = {}
+
         # 0. Update module list
         update_list = post.get('update_addons_list', False)
         if update_list:
             module.update_list()
-            
+
         # 1. Update addons
         update_addons = post.get('update_addons', [])
         if update_addons:
@@ -266,16 +286,50 @@ class SaasServerClient(models.Model):
         # 5. update parameters
         params = post.get('params', [])
         for obj in params:
+            if obj['key'] == 'saas_client.expiration_datetime':
+                self.expiration_datetime = obj['value']
+            if obj['key'] == 'saas_client.trial' and obj['value'] == 'False':
+                self.trial = False
             groups = []
             if obj.get('hidden'):
                 groups = ['saas_client.group_saas_support']
-            client_env['ir.config_parameter'].set_param(obj['key'], obj['value'], groups=groups)
-        return 'OK'
+            client_env['ir.config_parameter'].set_param(obj['key'], obj['value'] or ' ', groups=groups)
+
+        # 6. Access rights
+        access_owner_add = post.get('access_owner_add', [])
+        owner_id = client_env['ir.config_parameter'].get_param('res.users.owner', 0)
+        owner_id = int(owner_id)
+        if not owner_id:
+            res['owner_id'] = "Owner's user is not found"
+        if access_owner_add and owner_id:
+            res['access_owner_add'] = []
+            for g_ref in access_owner_add:
+                g = client_env.ref(g_ref, raise_if_not_found=False)
+                if not g:
+                    res['access_owner_add'].append('group not found: %s' % g_ref)
+                    continue
+                g.write({'users': [(4, owner_id, 0)]})
+        access_remove = post.get('access_remove', [])
+        if access_remove:
+            res['access_remove'] = []
+            for g_ref in access_remove:
+                g = client_env.ref(g_ref, raise_if_not_found=False)
+                if not g:
+                    res['access_remove'].append('group not found: %s' % g_ref)
+                    continue
+                users = []
+                for u in g.users:
+                    if u.id != SUPERUSER_ID:
+                        users.append((3, u.id, 0))
+                g.write({'users': users})
+
+        return res
 
     @api.model
     def delete_expired_databases(self):
         now = time.strftime(DEFAULT_SERVER_DATETIME_FORMAT)
-        res = self.search([('state','not in', ['deleted']), ('expiration_datetime', '<=', now)])
+
+        res = self.search([('state', 'not in', ['deleted', 'template']), ('expiration_datetime', '<=', now), ('trial', '=', True)])
         _logger.info('delete_expired_databases %s', res)
         res.delete_database()
 
@@ -283,3 +337,47 @@ class SaasServerClient(models.Model):
     def delete_database(self):
         openerp.service.db.exp_drop(self.name)
         self.write({'state': 'deleted'})
+
+    @api.one
+    def rename_database(self, new_dbname):
+        openerp.service.db.exp_rename(self.name, new_dbname)
+        self.name = new_dbname
+
+    @api.model
+    def _transport_backup(self, dump_db, filename=None):
+        '''
+        backup transport agents should override this
+        '''
+        raise exceptions.Warning('Transport agent has not been configured')
+
+    @api.multi
+    def backup_database(self):
+        res = []
+        for database_obj in self:
+            data = {}
+            data['name'] = database_obj.name
+
+            filename = "%(db_name)s_%(timestamp)s.zip" % {
+                'db_name': database_obj.name,
+                'timestamp': datetime.utcnow().strftime(
+                    "%Y-%m-%d_%H-%M-%SZ")}
+
+            def dump_db(stream):
+                return db.dump_db(database_obj.name, stream)
+
+            try:
+                database_obj._transport_backup(dump_db, filename=filename)
+                data['status'] = 'success'
+            except Exception as e:
+                _logger.exception('An error happened during database %s backup' % (database_obj.name))
+                data['status'] = 'fail'
+                data['message'] = str(e)
+
+            res.append(data)
+
+        return res
+
+    @api.model
+    def restart_server(self):
+        openerp.service.server.restart()
+        return True
